@@ -1,0 +1,171 @@
+#!/usr/bin/perl -w
+#
+# This script queries rss feeds and downloads any links
+# it has never seen before.
+#
+# This script requires the following modules not normally
+# installed with perl:
+#  Digest::MD5
+#  LWP::Simple
+#  XML::RSS::Parser
+
+use strict;
+use Digest::MD5 qw(md5_hex);
+use File::Basename;
+use LWP::Simple;
+use XML::RSS::Parser;
+
+# The file listing the feeds to query
+my $feed_file = '/Volumes/lacie/BitTorrent/.torrent_fetcher/feeds';
+
+# Where to put torrent files
+my $torrent_dir = '/Volumes/lacie/BitTorrent/Torrents';
+
+# Where fetched links are listed
+my $links_file = '/Volumes/lacie/BitTorrent/.torrent_fetcher/links';
+
+################################
+################################
+################################
+
+##
+## Variables
+##
+
+my @FEEDS;
+my %LINKS;
+my $PROGNAME = basename($0);
+
+##
+## Subroutines
+##
+
+sub logger {
+# wrapper to logger(1)
+
+	my $message = shift;
+
+	system('logger', '-t', $PROGNAME, $message);
+}
+
+sub download_link {
+# download a torrent link into $torrent_dir
+
+	my $link = shift;
+
+	my $file = md5_hex($link);
+	$file =~ s/\W/./g;
+	$file .= '.torrent';
+	$file = $torrent_dir . '/' . $file;
+
+	if(is_success(getstore($link, $file))) {
+		return 1;
+	}
+
+	return 0;
+}
+
+sub get_feed_links {
+# Get all the links from a feed
+
+	my $url = shift;
+	my @links;
+
+	my $rss = XML::RSS::Parser->new();
+	my $feed = $rss->parse_uri($url);
+
+	if(!defined($feed)) {
+		logger("Unable to fetch $url: " . $rss->errstr());
+		return @links;
+	}
+
+	if($feed->item_count() < 1) {
+		return @links;
+	}
+
+	foreach my $item ($feed->query('//item')) {
+		my $node = $item->query('link');
+		push(@links, $node->text_content());
+	}
+
+	return @links;
+}
+
+sub get_feeds_from_file {
+# Get the feeds to query
+
+	my $fh_feeds;
+	open($fh_feeds, '<', $feed_file) || do {
+		logger("Unable to open $feed_file: $!");
+		exit(1);
+	};
+
+	while(<$fh_feeds>) {
+		my $line = $_;
+		chomp($line);
+		next if $line =~ m/^#/;
+		next if $line =~ m/^ *$/;
+		$line =~ s/#.*//;
+		push(@FEEDS, $line);
+	}
+
+	close($fh_feeds);
+}
+
+sub get_links_from_file {
+# Get the list of already downloaded links
+
+	my $fh_links;
+	open($fh_links, '<', $links_file) || do {
+		#logger("Unable to open $links_file: $!");
+		return;
+	};
+
+	while(<$fh_links>) {
+		my $line = $_;
+		chomp($line);
+		next if $line =~ m/^ *$/;
+		$LINKS{$line} = 1;
+	}
+
+	close($fh_links);
+}
+
+sub write_links_file {
+# Write the list of already downloaded links
+
+	my @links;
+	foreach my $link (sort(keys(%LINKS))) {
+		push(@links, $link);
+	}
+
+	my $fh_links;
+	open($fh_links, '>', $links_file) || do {
+		logger("Unable to open $links_file: $!");
+		return;
+	};
+
+	print $fh_links join("\n", @links) . "\n";
+
+	close($fh_links);
+}
+
+##
+## Main
+##
+
+get_feeds_from_file();
+get_links_from_file();
+
+foreach my $feed (@FEEDS) {
+	foreach my $link (get_feed_links($feed)) {
+		next if(defined($LINKS{$link}));
+
+		download_link($link) && do {
+			$LINKS{$link} = 1;
+		};
+	}
+}
+
+write_links_file();
+exit(0);
